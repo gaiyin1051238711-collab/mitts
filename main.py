@@ -40,6 +40,23 @@ TTS_MODELS = {
 }
 
 
+def speed_instruction(rate_str: str):
+    """把 legado 的 rate 参数转为 MiMo 自然语言语速指令。
+
+    legado 公式: rate = (speakSpeed - 10) * 2, speakSpeed 范围 5-85, 默认 10
+    倍速 = speakSpeed / 10 = 1 + rate / 20, 即 rate=0 对应 1.0 倍速
+    """
+    try:
+        rate = float(rate_str)
+    except (TypeError, ValueError):
+        return None
+    multiplier = round(1 + rate / 20, 2)
+    multiplier = max(0.5, min(multiplier, 3.0))  # 夹到 0.5-3.0 倍,过高无意义
+    if 0.95 <= multiplier <= 1.05:
+        return None  # 默认语速,不加指令
+    return f"用正常语速的{multiplier}倍语速朗读，吐字清晰自然"
+
+
 @app.get("/favicon.ico")
 async def favicon():
     return Response(status_code=204)
@@ -47,7 +64,7 @@ async def favicon():
 
 @app.get("/")
 async def index_page(request: Request):
-    base_url = str(request.base_url).replace("http://", "https://").rstrip("/")
+    base_url = str(request.base_url).rstrip("/")
     options_html = "".join(
         [f'<option value="{k}">{v}</option>' for k, v in VOICES.items()]
     )
@@ -67,12 +84,14 @@ async def tts_forwarder(request: Request):
         voice = body.get("voice", "冰糖")
         model = body.get("model", "v2.5")
         audio_b64 = body.get("audio", "")
+        rate = body.get("rate", "0")
     else:
         api_key = request.query_params.get("api_key", "")
         text = request.query_params.get("text", "")
         voice = request.query_params.get("voice", "冰糖")
         model = request.query_params.get("model", "v2.5")
         audio_b64 = request.query_params.get("audio", "")
+        rate = request.query_params.get("rate", "0")
         text = urllib.parse.unquote(urllib.parse.unquote(text))
         audio_b64 = urllib.parse.unquote(urllib.parse.unquote(audio_b64))
 
@@ -107,11 +126,14 @@ async def tts_forwarder(request: Request):
             )
         else:
             # v2.5 内置音色 或 v2
+            messages = []
+            speed_txt = speed_instruction(rate)
+            if speed_txt:
+                messages.append({"role": "user", "content": speed_txt})
+            messages.append({"role": "assistant", "content": text})
             response = client.chat.completions.create(
                 model=model_name,
-                messages=[
-                    {"role": "assistant", "content": text},
-                ],
+                messages=messages,
                 audio={"format": "mp3", "voice": voice},
                 stream=False,
             )
@@ -140,7 +162,7 @@ async def tts_forwarder(request: Request):
 @app.get("/api/legado-import")
 async def legado_import(request: Request, voice: str = "冰糖", model: str = "v2.5"):
     api_key = request.query_params.get("api_key", "")
-    base_url = str(request.base_url).replace("http://", "https://").rstrip("/")
+    base_url = str(request.base_url).rstrip("/")
     v_name = VOICES.get(voice, f"音色({voice})")
     safe_api_key = urllib.parse.quote(api_key)
 
